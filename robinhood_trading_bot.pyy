@@ -1,0 +1,920 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import robin_stocks.robinhood as robin
+import json
+import pyotp
+import time
+import numpy
+import pandas as pd
+import os
+from typing import Dict, List
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+import tracebackß
+
+# In[11]:
+
+# Define log directory
+# Global Constants
+LOG_DIR = "/home/ec2-user/AWS"
+SCRIPT_LOG = os.path.join(LOG_DIR, "script.log")
+PATTERN_LOG = os.path.join(LOG_DIR, "pattern.log")
+TRADING_LOG = os.path.join(LOG_DIR, "trading.log")
+
+# Create log files if they don't exist
+for log_file in [SCRIPT_LOG, PATTERN_LOG, TRADING_LOG]:
+    try:
+        with open(log_file, 'a') as f:
+            pass
+        os.chmod(log_file, 0o666)
+    except Exception as e:
+        print(f"Error creating log file {log_file}: {e}")
+
+def setup_logging():
+    # Create logs directory if it doesn't exist
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # Create main logger
+    logger = logging.getLogger('trading_bot')
+    logger.setLevel(logging.INFO)
+
+    # Console handler for immediate feedback
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    )
+    logger.addHandler(console_handler)
+    
+    # Script log handler
+    script_handler = RotatingFileHandler(
+        SCRIPT_LOG,
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    script_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    )
+    logger.addHandler(script_handler)
+    
+    # Trading activity handler
+    trade_handler = RotatingFileHandler(
+        TRADING_LOG,
+        maxBytes=10*1024*1024,
+        backupCount=5
+    )
+    trade_handler.setFormatter(
+        logging.Formatter('%(asctime)s - TRADE - %(message)s')
+    )
+    logger.addHandler(trade_handler)
+    
+    # Pattern recognition handler
+    pattern_handler = RotatingFileHandler(
+        PATTERN_LOG,
+        maxBytes=10*1024*1024,
+        backupCount=5
+    )
+    pattern_handler.setFormatter(
+        logging.Formatter('%(asctime)s - Pattern - %(message)s')
+    )
+    logger.addHandler(pattern_handler)
+
+    # Test logging
+    logger.info("Logging system initialized")
+    logger.info(f"Logging to directory: {LOG_DIR}")
+    
+    return logger
+
+# Initialize logger
+try:
+    logger = setup_logging()
+except Exception as e:
+    print(f"Error setting up logging: {e}")
+    raise
+
+@dataclass
+class MarketRegime:
+    volatility: float
+    correlation: float
+    trend: float
+    volume_profile: float
+    pattern_type: str
+    risk_level: float
+
+class EfficientFrontierPatternRecognition:
+    def __init__(self, lookback_period: int = 60, short_term_period: int = 1, risk_free_rate: float = 0.03):
+        self.lookback_period = lookback_period
+        self.short_term_period = short_term_period
+        self.risk_free_rate = risk_free_rate
+        logger.info(f"Pattern Recognition initialized with {lookback_period} period lookback")
+
+    def calculate_technical_indicators(self, price_data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate technical indicators"""
+        df = price_data.copy()
+        
+        # RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # Moving Averages
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['EMA_12'] = df['Close'].ewm(span=12, adjust=False).mean()
+        df['EMA_26'] = df['Close'].ewm(span=26, adjust=False).mean()
+        
+        # MACD
+        df['MACD'] = df['EMA_12'] - df['EMA_26']
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        # Bollinger Bands
+        df['BB_middle'] = df['Close'].rolling(window=20).mean()
+        std = df['Close'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_middle'] + (std * 2)
+        df['BB_lower'] = df['BB_middle'] - (std * 2)
+        
+        logger.info("Technical indicators calculated")
+        return df
+
+    def identify_market_regime(self, price_data: pd.DataFrame) -> MarketRegime:
+        """Enhanced market regime identification with technical indicators"""
+        try:
+            df = self.calculate_technical_indicators(price_data)
+            returns = df['Close'].pct_change().dropna()
+            volatility = returns.std()
+            trend = self._calculate_trend(df)
+            
+            # Enhanced risk calculation using technicals
+            rsi = df['RSI'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_Signal'].iloc[-1]
+            
+            # Determine market conditions
+            overbought = rsi > 70
+            oversold = rsi < 30
+            macd_bullish = macd > macd_signal
+            
+            # Calculate risk level
+            risk_level = self._calculate_risk_level(volatility, rsi, macd)
+            
+            pattern_type = self._determine_pattern_type(df)
+            
+            logger.info(f"Market Regime - Risk: {risk_level:.2f}, Pattern: {pattern_type}")
+            
+            return MarketRegime(
+                volatility=volatility,
+                correlation=0,
+                trend=trend,
+                volume_profile=0,
+                pattern_type=pattern_type,
+                risk_level=risk_level
+            )
+        except Exception as e:
+            logger.error(f"Error in market regime identification: {e}")
+            raise
+# degen gambling and trading
+    def _calculate_risk_level(self, volatility: float, rsi: float, macd: float) -> float:
+        """Calculate risk level based on multiple factors"""
+        try:
+            # Normalize indicators
+            vol_score = min(volatility * 100, 1)  # Higher volatility = higher risk
+            rsi_score = abs(50 - rsi) / 50  # Extreme RSI = higher risk
+            macd_score = abs(macd) / 100  # Extreme MACD = higher risk
+            
+            # Weighted average
+            risk_level = (vol_score * 0.4 + rsi_score * 0.3 + macd_score * 0.3)
+            
+            return min(risk_level, 1.0)  # Cap at 1.0
+        except Exception as e:
+            logger.error(f"Error calculating risk level: {e}")
+            return 0.5  # Default to medium risk
+
+    def _calculate_trend(self, df: pd.DataFrame) -> float:
+        """Enhanced trend calculation using multiple indicators"""
+        try:
+            price_trend = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]
+            ma_trend = df['SMA_20'].iloc[-1] > df['SMA_50'].iloc[-1]
+            macd_trend = df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1]
+            
+            trend_score = price_trend
+            if ma_trend: trend_score += 0.1
+            if macd_trend: trend_score += 0.1
+            
+            return trend_score
+        except Exception as e:
+            logger.error(f"Error calculating trend: {e}")
+            return 0.0
+# because math does not work
+    def identify_patterns(self, price_data: pd.DataFrame) -> list:
+        """Enhanced pattern identification using technical indicators"""
+        try:
+            df = self.calculate_technical_indicators(price_data)
+            patterns = []
+          # because you have to be the smartest person in the world to play the stock market  
+            # Technical pattern detection
+            rsi = df['RSI'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_Signal'].iloc[-1]
+            current_price = df['Close'].iloc[-1]
+            
+            # RSI patterns
+            if rsi > 70:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'RSI_overbought',
+                    'final_score': min(rsi/100, 0.99)
+                })
+            elif rsi < 30:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'RSI_oversold',
+                    'final_score': min((30-rsi)/30, 0.99)
+                })
+            
+            # MACD patterns
+            if macd > macd_signal:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'MACD_bullish',
+                    'final_score': min(abs(macd-macd_signal), 0.99)
+                })
+            elif macd < macd_signal:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'MACD_bearish',
+                    'final_score': min(abs(macd_signal-macd), 0.99)
+                })
+            # thankful for transformers
+            # Bollinger Band patterns
+            if current_price > df['BB_upper'].iloc[-1]:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'BB_upper_breach',
+                    'final_score': 0.8
+                })
+            elif current_price < df['BB_lower'].iloc[-1]:
+                patterns.append({
+                    'type': 'technical',
+                    'name': 'BB_lower_breach',
+                    'final_score': 0.8
+                })
+            
+            logger.info(f"Identified {len(patterns)} patterns")
+            return patterns
+            
+        except Exception as e:
+            logger.error(f"Error identifying patterns: {e}")
+            return []
+# this is degen gambling? 
+# Strat Patterns Dictionary
+STRAT_PATTERNS = {
+    'bearish_reversals': {
+        '2-1-2': [2, 1, 2],
+        '3-2-2': [3, 2, 2],
+        '1-2-2': [1, 2, 2],
+    },
+    'bullish_reversals': {
+        '1-2-2': [1, 2, 2],
+        '2-1-2': [2, 1, 2],
+        '3-2-2': [3, 2, 2],
+    },
+    'continuations': {
+        '2-2_bullish': [2, 2],
+        '2-2_bearish': [2, 2],
+    }
+}
+
+class StratPatternDetector:
+    def __init__(self, patterns_dict: Dict = STRAT_PATTERNS):
+        self.patterns = patterns_dict
+        self.candle_history = {
+            '1m': [],
+            '5m': [],
+            '15m': [],
+            '1h': []
+        }
+        self.last_price_time = {
+            '1m': None,
+            '5m': None,
+            '15m': None,
+            '1h': None
+        }
+    
+    def get_candle_number(self, current_price: float, previous_price: float) -> int:
+        """Determine the Strat number for a candle"""
+        if current_price > previous_price:
+            return 2  # Up bar
+        elif current_price < previous_price:
+            return -2  # Down bar
+        return 1  # Equal/Inside bar
+
+    def update_timeframe_data(self, current_price: float, timestamp: datetime):
+        """Update pattern data for different timeframes"""
+        timeframes = {
+            '1m': timedelta(minutes=1),
+            '5m': timedelta(minutes=5),
+            '15m': timedelta(minutes=15),
+            '1h': timedelta(hours=1)
+        }
+        # wow ppl care about ego way to much
+        for tf, delta in timeframes.items():
+            if not self.last_price_time[tf] or timestamp - self.last_price_time[tf] >= delta:
+                if self.candle_history[tf]:
+                    candle_number = self.get_candle_number(current_price, self.candle_history[tf][-1])
+                    self.candle_history[tf].append(candle_number)
+                    if len(self.candle_history[tf]) > 10:
+                        self.candle_history[tf].pop(0)
+                else:
+                    self.candle_history[tf].append(current_price)
+                self.last_price_time[tf] = timestamp
+
+    def check_all_timeframes(self) -> Dict:
+        """Check patterns across all timeframes"""
+        patterns_by_timeframe = {}
+        for tf in self.candle_history.keys():
+            if len(self.candle_history[tf]) > 2:  # Need at least 3 candles
+                patterns = self.identify_pattern(self.candle_history[tf])
+                if patterns:
+                    patterns_by_timeframe[tf] = patterns
+        return patterns_by_timeframe
+
+class BTCBuyer:
+    def __init__(self):
+        # Load config and initialize as before
+        with open('/home/ec2-user/AWS/config_trying.json', 'r') as f:
+            config_trying = json.load(f)
+            self.username = config_trying['ROBINHOOD_USERNAME']
+            self.password = config_trying['ROBINHOOD_PASSWORD']
+            self.totp_key = config_trying['TOTP_KEY']
+        
+        self.logged_in = False
+        self.usd_amount = 100.00
+        self.profit_target = 0.005
+        self.stop_loss = -0.0002
+        self.purchase_price = 0
+        
+        # Add price caching
+        self.last_price_check = None
+        self.price_cache = None
+        self.price_cache_duration = 60  # Cache price for 60 seconds
+        self.last_trade_time = None
+        self.price_history = []
+        
+        # Initialize pattern recognition
+        self.pattern_recognition = EfficientFrontierPatternRecognition(
+            lookback_period=60,
+            short_term_period=1,
+            risk_free_rate=0.03
+        )
+        logger.info("BTCBuyer initialized")
+
+    def login(self):
+        try:
+            totp = pyotp.TOTP(self.totp_key)
+            self.login = robin.login(
+                username=self.username,
+                password=self.password,
+                mfa_code=totp.now()
+            )
+            self.logged_in = True
+            logger.info("Successfully logged in to Robinhood")
+            return True
+        except Exception as e:
+            logger.error(f"Login failed: {e}", exc_info=True)
+            return False
+
+    def get_btc_price(self):
+        current_time = time.time()
+        
+        # Return cached price if valid
+        if (self.last_price_check and 
+            current_time - self.last_price_check < self.price_cache_duration and 
+            self.price_cache):
+            logger.debug(f"Using cached price: ${self.price_cache:,.2f}")
+            return self.price_cache
+            
+        try:
+            quote = robin.get_crypto_quote('BTC')
+            current_price = float(quote['mark_price'])
+            
+            # Update cache
+            self.price_cache = current_price
+            self.last_price_check = current_time
+            
+            logger.info(f"Current BTC Price: ${current_price:,.2f}")
+            return current_price
+        except Exception as e:
+            logger.error(f"Error getting BTC price: {e}")
+            return self.price_cache
+    def get_position_info(self):
+        """Get current BTC position and purchase price"""
+        try:
+            holdings = robin.get_crypto_positions()
+            for holding in holdings:
+                if holding['currency']['code'] == 'BTC':
+                    quantity = float(holding['quantity'])
+                    if quantity > 0:
+                        # Get the average buy price
+                        self.purchase_price = float(holding['cost_bases'][0]['direct_cost_basis']) / quantity
+                        logger.info(f"Found position: {quantity:.8f} BTC @ ${self.purchase_price:,.2f}")
+                        return True
+            return False
+        except Exception as e:
+            logger.error(f"Error getting position info: {e}")
+            return False
+
+    def check_active_position(self):
+        """Check if we already have a BTC position"""
+        try:
+            holdings = robin.get_crypto_positions()
+            for holding in holdings:
+                if holding['currency']['code'] == 'BTC':
+                    quantity = float(holding['quantity'])
+                    if quantity > 0:
+                        logger.info(f"Active BTC position found: {quantity:.8f} BTC")
+                        return True
+            return False
+        except Exception as e:
+            logger.error(f"Error checking positions: {e}")
+            return False
+        
+    def execute_btc_buy(self):
+        """Execute BTC buy order with enhanced diagnostics"""
+        try:
+            # Extensive pre-buy checks
+            logger.info("Starting buy order execution")
+            
+            # Verify login status
+            if not self.logged_in:
+                logger.error("Not logged in. Cannot execute buy.")
+                return None
+            
+            # Check account balance
+            try:
+                buying_power = robin.get_cash()
+                logger.info(f"Available buying power: ${buying_power}")
+                
+                if float(buying_power) < self.usd_amount:
+                    logger.error(f"Insufficient funds. Available: ${buying_power}, Required: ${self.usd_amount}")
+                    return None
+            except Exception as balance_error:
+                logger.error(f"Failed to check account balance: {balance_error}")
+                return None
+            
+            # Check if an active position already exists
+            if self.check_active_position():
+                logger.info("Active BTC position exists. Skipping buy.")
+                return None
+            
+            # Get current price with additional error handling
+            current_price = self.get_btc_price()
+            if current_price <= 0:
+                logger.error("Unable to retrieve valid BTC price.")
+                return None
+            
+            # Calculate buy quantity
+            btc_quantity = self.usd_amount / current_price
+            
+            # Detailed logging of buy attempt
+            logger.info(f"Buy Attempt Details:")
+            logger.info(f"  Amount to invest: ${self.usd_amount:.2f}")
+            logger.info(f"  Current BTC Price: ${current_price:,.2f}")
+            logger.info(f"  Quantity to buy: {btc_quantity:.8f} BTC")
+            
+            # Execute buy order
+            try:
+                order = robin.order_buy_crypto_by_price('BTC', self.usd_amount)
+                
+                if order:
+                    logger.info("Buy order executed successfully")
+                    logger.info(f"Order Details: {json.dumps(order, indent=2)}")
+                    
+                    # Log trade
+                    self.log_trade("BUY", current_price, btc_quantity, "Market order execution")
+                    
+                    return order
+                else:
+                    logger.error("Buy order failed. No order returned.")
+                    return None
+            
+            except Exception as order_error:
+                logger.error(f"Error executing buy order: {order_error}")
+                logger.error(traceback.format_exc())
+                return None
+        
+        except Exception as overall_error:
+            logger.critical(f"Critical error in execute_btc_buy: {overall_error}")
+            logger.critical(traceback.format_exc())
+            return None
+
+    def execute_btc_sell(self, reason):
+        """
+        Execute BTC sell order with enhanced order confirmation and market condition checks
+        
+        Key Improvements:
+        - Check for confirmed buy order
+        - Validate market conditions before selling
+        - Detailed logging
+        - Multiple sell condition checks
+        """
+        try:
+            # Ensure a buy order exists and was confirmed
+            if self.buy_order_id is None:
+                logger.error("No confirmed buy order. Cannot execute sell.")
+                return None
+
+            # Get current holdings
+            holdings = robin.get_crypto_positions()
+            for holding in holdings:
+                if holding['currency']['code'] == 'BTC':
+                    quantity = float(holding['quantity'])
+                    current_price = self.get_btc_price()
+                    
+                    # Calculate profit percentage
+                    profit_percentage = (current_price - self.purchase_price) / self.purchase_price * 100
+                    
+                    # Multiple market condition checks
+                    sell_conditions = [
+                        # Minimum profit threshold (0.1%)
+                        current_price > self.purchase_price * 1.001,  # 0.1% profit
+                        
+                        # Technical analysis conditions
+                        self._check_sell_technical_conditions(current_price)
+                    ]
+                    
+                    # Detailed logging of sell conditions
+                    logger.info("Sell Condition Checks:")
+                    logger.info(f"  Current Price: ${current_price:,.2f}")
+                    logger.info(f"  Purchase Price: ${self.purchase_price:,.2f}")
+                    logger.info(f"  Profit Percentage: {profit_percentage:.4f}%")
+                    logger.info(f"  Minimum Profit Condition: {sell_conditions[0]}")
+                    
+                    # Only sell if all conditions are met
+                    if all(sell_conditions):
+                        logger.info(f"Preparing to sell {quantity:.8f} BTC")
+                        
+                        # Execute sell order
+                        order = robin.order_sell_crypto_by_quantity('BTC', quantity)
+                        
+                        if order:
+                            # Verify sell price from order details
+                            sell_price = float(order.get('price', current_price))
+                            final_profit_percentage = (sell_price - self.purchase_price) / self.purchase_price * 100
+                            
+                            # Log trade details
+                            self.log_trade("SELL", sell_price, quantity, reason, final_profit_percentage)
+                            
+                            logger.info("Sell Order Details:")
+                            logger.info(f"  Sell Price: ${sell_price:,.2f}")
+                            logger.info(f"  Final Profit: {final_profit_percentage:.4f}%")
+                            
+                            # Reset buy order ID after successful sell
+                            self.buy_order_id = None
+                            
+                            return order
+                        else:
+                            logger.error("Sell order execution failed")
+                    else:
+                        logger.info("Market conditions not favorable for selling")
+                    
+            logger.warning("No BTC position found to sell")
+            return None
+        
+        except Exception as e:
+            logger.error(f"Error executing sell: {e}")
+            logger.error(traceback.format_exc())
+            return None
+        
+    def _should_take_profit(self, profit_percentage, last_profit, max_profit_seen, df):
+        """Enhanced profit-taking decision using technical indicators"""
+        try:
+            # Get current technical indicators
+            rsi = df['RSI'].iloc[-1]
+            macd = df['MACD'].iloc[-1]
+            macd_signal = df['MACD_Signal'].iloc[-1]
+            price = df['Close'].iloc[-1]
+            bb_upper = df['BB_upper'].iloc[-1]
+            bb_lower = df['BB_lower'].iloc[-1]
+
+            # Log technical state
+            logger.info(f"Technical Status - RSI: {rsi:.2f}, MACD: {macd:.2f}, Price: {price:.2f}")
+
+            if profit_percentage > 0:  # Only consider taking profit when we're up
+                # Strong sell signals
+                if any([
+                    rsi > 70,  # Overbought
+                    macd < macd_signal,  # MACD bearish crossover
+                    price > bb_upper,  # Price above upper BB
+                    profit_percentage < last_profit and rsi > 60,  # Price dropping with high RSI
+                    max_profit_seen - profit_percentage >= 0.0005 and rsi > 55  # Significant drop from peak
+                ]):
+                    reason = []
+                    if rsi > 70: reason.append("RSI Overbought")
+                    if macd < macd_signal: reason.append("MACD Bearish")
+                    if price > bb_upper: reason.append("BB Upper Breach")
+                    if profit_percentage < last_profit: reason.append("Price Dropping")
+                    
+                    logger.info(f"Taking profit - Reasons: {', '.join(reason)}")
+                    return True
+
+            # Stop loss with technical confirmation
+            if profit_percentage <= self.stop_loss and rsi < 30:
+                logger.info("Stop loss triggered with oversold conditions")
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error in profit decision: {e}")
+            return False
+    def _check_sell_technical_conditions(self, current_price):
+        """
+        Additional technical analysis conditions for selling
+        
+        Add this method to the BTCBuyer class
+        """
+        try:
+            # You'll need to maintain a price history for this
+            if len(self.price_history) < 60:
+                return False
+            
+            df = pd.DataFrame(self.price_history)
+            df = self.pattern_recognition.calculate_technical_indicators(df)
+            
+            # Technical sell conditions
+            conditions = [
+                # RSI overbought
+                df['RSI'].iloc[-1] > 70,
+                
+                # MACD bearish crossover
+                df['MACD'].iloc[-1] < df['MACD_Signal'].iloc[-1],
+                
+                # Price above upper Bollinger Band
+                current_price > df['BB_upper'].iloc[-1],
+                
+                # Significant price drop from recent peak
+                (current_price - self.purchase_price) / self.purchase_price < -0.005  # 0.5% drop
+            ]
+            
+            # Log detailed sell condition information
+            logger.info("Sell Condition Checks:")
+            condition_names = [
+                "RSI Overbought",
+                "MACD Bearish Crossover", 
+                "Price Above Upper Bollinger Band", 
+                "Significant Price Drop"
+            ]
+            for name, condition in zip(condition_names, conditions):
+                logger.info(f"  {name}: {condition}")
+            
+            # Return True if any conditions are met
+            return any(conditions)
+        
+        except Exception as e:
+            logger.error(f"Error in sell condition check: {e}")
+            return False
+        
+    def monitor_profit(self):
+        try:
+            if self.purchase_price == 0:
+                if not self.get_position_info():
+                    logger.info("No active position found to monitor")
+                    return
+
+            logger.info("Starting profit monitoring")
+            max_profit_seen = 0
+            last_profit = 0
+            trades_this_minute = 0
+            
+            while True:
+                try:
+                    current_time = datetime.now()
+                    
+                    # Reset trade counter each minute
+                    if self.last_trade_time and current_time.minute != self.last_trade_time.minute:
+                        trades_this_minute = 0
+                    
+                    # Only proceed if we haven't traded this minute
+                    if trades_this_minute < 1:
+                        current_price = self.get_btc_price()
+                        
+                        # Update price history
+                        self._update_price_history(current_price)
+                        
+                        # Calculate profit precisely
+                        profit_percentage = (current_price - self.purchase_price) / self.purchase_price * 100
+                        
+                        # Detailed logging
+                        logger.info(f"Monitoring Details:")
+                        logger.info(f"  Current Price: ${current_price:,.2f}")
+                        logger.info(f"  Purchase Price: ${self.purchase_price:,.2f}")
+                        logger.info(f"  Current Profit: {profit_percentage:.4f}%")
+                        logger.info(f"  Last Profit: {last_profit:.4f}%")
+                        logger.info(f"  Max Profit Seen: {max_profit_seen:.4f}%")
+                        
+                        # Check for trade signals
+                        if len(self.price_history) >= 60:
+                            df = pd.DataFrame(self.price_history)
+                            df = self.pattern_recognition.calculate_technical_indicators(df)
+                            
+                            # More comprehensive sell conditions
+                            sell_conditions = [
+                                # Basic profit condition
+                                profit_percentage > 0.05,  # 0.05% profit
+                                
+                                # Profit is dropping from max seen
+                                max_profit_seen - profit_percentage >= 0.01,  # 0.01% drop from peak
+                                
+                                # Technical indicators
+                                df['RSI'].iloc[-1] > 70,  # Overbought RSI
+                                df['MACD'].iloc[-1] < df['MACD_Signal'].iloc[-1]  # MACD bearish
+                            ]
+                            
+                            # Logging sell conditions
+                            logger.info("Sell Conditions:")
+                            condition_names = [
+                                "Minimum Profit (0.05%)",
+                                "Profit Drop from Peak",
+                                "RSI Overbought",
+                                "MACD Bearish Crossover"
+                            ]
+                            for name, condition in zip(condition_names, sell_conditions):
+                                logger.info(f"  {name}: {condition}")
+                            
+                            # Execute sell if conditions met
+                            if any(sell_conditions):
+                                logger.info(f"Taking profit at: {profit_percentage:.4f}%")
+                                result = self.execute_btc_sell("PROFIT")
+                                if result:
+                                    trades_this_minute += 1
+                                    self.last_trade_time = current_time
+                                    break
+                        
+                        # Update max profit tracking
+                        if profit_percentage > max_profit_seen:
+                            max_profit_seen = profit_percentage
+                            logger.info(f"New max profit: {max_profit_seen:.4f}%")
+                        
+                        # Update last profit for next iteration
+                        last_profit = profit_percentage
+                    
+                    time.sleep(10)  # Check every 10 seconds
+                    
+                except Exception as loop_error:
+                    logger.error(f"Error in monitoring loop: {loop_error}")
+                    logger.error(traceback.format_exc())
+                    time.sleep(60)
+                    continue
+                    
+        except Exception as e:
+            logger.critical(f"Critical error in monitor_profit: {e}")
+            logger.critical(traceback.format_exc())
+            return False
+        
+    def log_trade(self, action: str, price: float, quantity: float, reason: str, profit: float = None):
+        """Log trade actions to the trading log"""
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(os.path.join(LOG_DIR, "trading.log"), "a") as f:
+                if action == "BUY":
+                    f.write(f"""
+    {timestamp}: [INFO] [BUY] Executed buy order:
+        Price: ${price:,.2f}
+        Quantity: {quantity:.8f} BTC
+        Reason: {reason}
+        Volume: 0 (Robinhood data unavailable)
+    """)
+                elif action == "SELL":
+                    f.write(f"""
+    {timestamp}: [INFO] [SELL] Executed sell order:
+        Price: ${price:,.2f}
+        Quantity: {quantity:.8f} BTC
+        Reason: {reason}
+        Final Profit: {profit:.4f}%
+        Current Market Price: ${price:,.2f}
+    """)
+            logger.info(f"{action} order logged successfully")
+        except Exception as e:
+            logger.error(f"Error logging trade: {e}")
+    def _update_price_history(self, current_price):
+        current_time = datetime.now()
+        
+        # Append new price point
+        self.price_history.append({
+            'Close': current_price,
+            'Volume': 0,
+            'timestamp': current_time
+        })
+        
+        # Keep only the last 60 entries
+        if len(self.price_history) > 60:
+            self.price_history.pop(0)
+
+    def _analyze_patterns(self, price_history):
+        """Analyze price patterns and log results"""
+        try:
+            price_df = pd.DataFrame(price_history)
+            current_regime = self.pattern_recognition.identify_market_regime(price_df)
+            patterns = self.pattern_recognition.identify_patterns(price_df)
+            
+            logger.info(f"Market Regime: {current_regime.pattern_type}")
+            logger.info(f"Risk Level: {current_regime.risk_level:.2f}")
+            
+            if patterns:
+                for pattern in patterns:
+                    logger.info(f"Pattern detected: {pattern['name']} ({pattern['final_score']:.2f})")
+        except Exception as e:
+            logger.error(f"Error analyzing patterns: {e}")
+
+
+# In[12]:
+
+
+def main():
+    try:
+        logger.info("Starting trading bot - Full Diagnostic Mode")
+        
+        # Diagnostic: System and Environment Checks
+        logger.info(f"Python Version: {sys.version}")
+        logger.info(f"Current Working Directory: {os.getcwd()}")
+        
+        # Configuration File Check
+        config_path = '/home/ec2-user/AWS/config_trying.json'
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                logger.info("Configuration file loaded successfully")
+                # Mask sensitive information
+                logger.info(f"Username: {config.get('ROBINHOOD_USERNAME', 'N/A')[:3]}***")
+        except Exception as config_error:
+            logger.critical(f"Configuration file error: {config_error}")
+            return
+        
+        # Create BTCBuyer instance
+        try:
+            buyer = BTCBuyer()
+        except Exception as init_error:
+            logger.critical(f"Failed to initialize BTCBuyer: {init_error}")
+            return
+        
+        # Login Attempt
+        try:
+            login_result = buyer.login()
+            if not login_result:
+                logger.error("Login failed. Cannot proceed.")
+                return
+        except Exception as login_error:
+            logger.critical(f"Login process failed: {login_error}")
+            return
+        
+        # Position Check
+        try:
+            has_active_position = buyer.check_active_position()
+            logger.info(f"Active position status: {has_active_position}")
+        except Exception as position_check_error:
+            logger.critical(f"Failed to check active position: {position_check_error}")
+            return
+        
+        # Trading Logic
+        try:
+            if has_active_position:
+                logger.info("Monitoring existing position")
+                buyer.monitor_profit()
+            else:
+                logger.info("Attempting to execute buy order")
+                order = buyer.execute_btc_buy()
+                
+                if order:
+                    logger.info("Buy order successful. Starting profit monitoring.")
+                    buyer.monitor_profit()
+                else:
+                    logger.error("Failed to execute buy order.")
+        except Exception as trading_error:
+            logger.critical(f"Trading process failed: {trading_error}")
+            return
+        
+        logger.info("Trading bot execution completed successfully")
+    
+    except Exception as overall_error:
+        logger.critical(f"Unhandled critical error: {overall_error}")
+        logger.critical(traceback.format_exc())
+        sys.exit(1)
+
+if __name__ == "__main__":
+    try:
+        # Ensure logging is set up before anything else
+        setup_logging()
+        main()
+    except Exception as e:
+        # Last-resort error logging
+        print(f"Critical error before logging could be set up: {e}")
+        traceback.print_exc()
+        sys.exit(1)
